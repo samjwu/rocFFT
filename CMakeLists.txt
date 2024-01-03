@@ -297,7 +297,7 @@ if(BUILD_CODE_COVERAGE)
   #
   add_custom_target(coverage_analysis
     COMMAND echo Coverage GTEST_FILTER=\${GTEST_FILTER}
-    COMMAND ROCM_PATH=/opt/rocm GTEST_LISTENER=NO_PASS_LINE_IN_LOG ./rocfft-test --precompile=rocfft-test-precompile.db --gtest_filter=\"\${GTEST_FILTER}\" --gtest_color=yes --R 80
+    COMMAND ROCM_PATH=/opt/rocm GTEST_LISTENER=NO_PASS_LINE_IN_LOG ./clients/staging/rocfft-test --precompile=rocfft-test-precompile.db --gtest_filter=\"\${GTEST_FILTER}\" --gtest_color=yes --R 80
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     )
 
