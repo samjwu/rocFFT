@@ -61,9 +61,9 @@ class PDFFigure(BaseFigure):
             ndata = max(ndata, len(df.index))
 
         if ndata > 1 and self.figtype == "linegraph":
-            asycmd.append(top / "datagraphs.asy")
+            asycmd.append(str(top / "datagraphs.asy"))
         elif ndata == 1 or self.figtype == "bargraph":
-            asycmd.append(top / "bargraph.asy")
+            asycmd.append(str(top / "bargraph.asy"))
 
         primary = [x.resolve() for x in self.primary]
         asycmd.extend(['-u', f'filenames="{cjoin(primary)}"'])
@@ -72,7 +72,7 @@ class PDFFigure(BaseFigure):
             asycmd.extend(['-u', f'legendlist="{cjoin(self.labels)}"'])
 
         if self.secondary is not None:
-            secondary = [x.resolve() for x in self.secondary]
+            secondary = [x for x in self.secondary]
             asycmd.extend(['-u', f'secondary_filenames="{cjoin(secondary)}"'])
 
         asycmd.extend(['-o', self.filename])
@@ -133,7 +133,13 @@ the efficiency is measured against the theoretical maximum bandwidth \
 for the device.'''
 
 
-def make_tex(figs, docdir, outdirs, label, significance, secondtype=None):
+def make_tex(figs,
+             docdir,
+             outdirs,
+             label,
+             significance,
+             ncompare,
+             secondtype=None):
     """Generate PDF containing performance figures."""
 
     docdir = Path(docdir)
@@ -195,12 +201,6 @@ def make_tex(figs, docdir, outdirs, label, significance, secondtype=None):
     df_all_good = pandas.DataFrame()
     df_all_bad = pandas.DataFrame()
 
-    ncompare = 0
-    for idx, fig in enumerate(figs):
-        for p in fig.secondary:
-            df = pandas.read_csv(p, sep="\t", comment='#')
-            ncompare += len(df.index)
-
     # We need a list of speedups to compute the geometric mean via
     # sicpy.stats; the naive calculation suffers from issues with
     # finite precision.
@@ -219,7 +219,6 @@ def make_tex(figs, docdir, outdirs, label, significance, secondtype=None):
 \\end{figure}
 '''
         for p in fig.secondary:
-
             df = pandas.read_csv(p, sep="\t", comment='#')
 
             for row in df.itertuples(index=False):
@@ -290,79 +289,84 @@ def make_tex(figs, docdir, outdirs, label, significance, secondtype=None):
     nspeedup = len(df_all_good.index)
     nslowdown = len(df_all_bad.index)
 
-    print(
-        "nspeedup  (" + label[1] + " is faster): " +
-        " " * max(len(label[0]) - len(label[1]), 0), nspeedup)
-    print(
-        "nslowdown (" + label[0] + " is faster): " +
-        " " * max(len(label[1]) - len(label[0]), 0), nslowdown)
+    if len(outdirs) > 1:
+        print(
+            "nspeedup  (" + label[1] + " is faster): " +
+            " " * max(len(label[0]) - len(label[1]), 0), nspeedup)
+        print(
+            "nslowdown (" + label[0] + " is faster): " +
+            " " * max(len(label[1]) - len(label[0]), 0), nslowdown)
+        if ncompare > 0:
+            geometric_mean = 1.0
+            if len(speedups) > 1:
+                geometric_mean = scipy.stats.mstats.gmean(speedups)
+            print("geometric mean:", geometric_mean)
+            tex += "\\begin{table}[H]\n"
+            tex += "\\centering\n"
+            tex += "\\begin{tabular}{l|p{5cm}|p{5cm}|l|}\n"
+            tex += "ncompare & nspeedup " + "(" + label[
+                1] + " faster)" + " & nslowdown (" + label[
+                    0] + " faster)" + " & gmean\\\\ \n"
+            tex += "\\hline\n"
+            tex += str(ncompare) + "&" + str(nspeedup) + "&" + str(
+                nslowdown) + "&" + '{0:.3f}'.format(geometric_mean) + "\\\\\n"
+            tex += "100\\%" + "&" + '{0:.3f}'.format(
+                100 * nspeedup / ncompare) + "\\% " + "&" + '{0:.3f}'.format(
+                    100 * nslowdown / ncompare) + "\\% " + "&\\\\\n"
+            tex += "\\hline\n"
+            tex += "\\end{tabular}\n"
+            tex += "\\caption{Overall Performance Changes}\n"
+            tex += "\\end{table}\n"
 
-    if ncompare > 0:
-        geometric_mean = scipy.stats.mstats.gmean(speedups)
-        print("geometric mean:", geometric_mean)
-        tex += "\\begin{table}[H]\n"
-        tex += "\\centering\n"
-        tex += "\\begin{tabular}{l|p{5cm}|p{5cm}|l|}\n"
-        tex += "ncompare & nspeedup " + "(" + label[
-            1] + " faster)" + " & nslowdown (" + label[
-                0] + " faster)" + " & gmean\\\\ \n"
-        tex += "\\hline\n"
-        tex += str(ncompare) + "&" + str(nspeedup) + "&" + str(
-            nslowdown) + "&" + '{0:.3f}'.format(geometric_mean) + "\\\\\n"
-        tex += "100\\%" + "&" + '{0:.3f}'.format(
-            100 * nspeedup / ncompare) + "\\% " + "&" + '{0:.3f}'.format(
-                100 * nslowdown / ncompare) + "\\% " + "&\\\\\n"
-        tex += "\\hline\n"
-        tex += "\\end{tabular}\n"
-        tex += "\\caption{Overall Performance Changes}\n"
-        tex += "\\end{table}\n"
+        if nspeedup + nslowdown > 0:
+            vals = []
+            for row in df_all_good.itertuples(index=False):
+                vals.append(100 * (row.speedup - 1))
+            for row in df_all_bad.itertuples(index=False):
+                vals.append(100 * (1 - (1 / row.speedup)))
 
-    if nspeedup + nslowdown > 0:
-        vals = []
-        for row in df_all_good.itertuples(index=False):
-            vals.append(100 * (row.speedup - 1))
-        for row in df_all_bad.itertuples(index=False):
-            vals.append(100 * (1 - (1 / row.speedup)))
+            histdatname = os.path.join(docdir, "histogram.dat")
 
-        histdatname = os.path.join(docdir, "histogram.dat")
+            with open(histdatname, 'w') as f:
+                f.write("\t".join(str(x) for x in vals))
+                f.write("\n")
 
-        with open(histdatname, 'w') as f:
-            f.write("\t".join(str(x) for x in vals))
-            f.write("\n")
+            fout = tempfile.TemporaryFile(mode="w+")
+            ferr = tempfile.TemporaryFile(mode="w+")
 
-        fout = tempfile.TemporaryFile(mode="w+")
-        ferr = tempfile.TemporaryFile(mode="w+")
+            asycmd = ["asy", "-f", "pdf", "histogram.asy"]
+            asycmd.extend(['-u', 'filename="' + histdatname + '"'])
+            asycmd.extend(['-o', os.path.join(docdir, "histogram.pdf")])
 
-        asycmd = ["asy", "-f", "pdf", "histogram.asy"]
-        asycmd.extend(['-u', 'filename="' + histdatname + '"'])
-        asycmd.extend(['-o', os.path.join(docdir, "histogram.pdf")])
+            asyproc = subprocess.Popen(asycmd,
+                                       cwd=top,
+                                       stdout=fout,
+                                       stderr=ferr)
+            try:
+                asyproc.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                logging.info("asy command killed: " + sjoin(asycmd))
+                asyproc.kill()
 
-        asyproc = subprocess.Popen(asycmd, cwd=top, stdout=fout, stderr=ferr)
-        try:
-            asyproc.wait(timeout=20)
-        except subprocess.TimeoutExpired:
-            logging.info("asy command killed: " + sjoin(asycmd))
-            asyproc.kill()
+            if asyproc.returncode != 0:
+                logging.warn('ASY command failed: ' + sjoin(asycmd))
 
-        if asyproc.returncode != 0:
-            logging.warn('ASY command failed: ' + sjoin(asycmd))
+                fout.seek(0)
+                ferr.seek(0)
+                cout = fout.read()
+                cerr = ferr.read()
 
-            fout.seek(0)
-            ferr.seek(0)
-            cout = fout.read()
-            cerr = ferr.read()
+                print(cout)
+                print(cerr)
 
-            print(cout)
-            print(cerr)
+            tex += '''\\centering
+    \\begin{figure}[H]
+    \\includegraphics[width=\\textwidth]{'''
+            tex += "histogram.pdf"
+            tex += '''}
+    \\caption{''' + "Histogram of performance changes" + '''}\n\\end{figure}'''
 
-        tex += '''\\centering
-\\begin{figure}[H]
-\\includegraphics[width=\\textwidth]{'''
-        tex += "histogram.pdf"
-        tex += '''}
-\\caption{''' + "Histogram of performance changes" + '''}\n\\end{figure}'''
-
-    tex += "\\clearpage\n"
+        tex += "\\clearpage\n"
 
     tex += figtex
 
@@ -400,7 +404,8 @@ def make_tex(figs, docdir, outdirs, label, significance, secondtype=None):
 
     log = docdir / 'tex.log'
     with log.open('w') as f:
-        latexcmd = ['latexmk', '-pdf', fname.name]
+        #latexcmd = ['latexmk','-pdf', fname.name]
+        latexcmd = ['latexmk', '-interaction=batchmode', '-pdf', fname.name]
         texproc = subprocess.Popen(latexcmd,
                                    cwd=fname.parent,
                                    stdout=f,

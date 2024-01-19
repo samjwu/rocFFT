@@ -18,7 +18,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-#include "accuracy_test.h"
+#include "../../shared/accuracy_test.h"
 #include <gtest/gtest.h>
 #include <hip/hip_runtime_api.h>
 
@@ -28,7 +28,9 @@ static const std::vector<std::vector<size_t>> multi_gpu_sizes = {
     {256, 256, 256},
 };
 
-std::vector<fft_params> param_generator_multi_gpu()
+std::vector<fft_params> param_generator_multi_gpu(const fft_params::SplitType input_split,
+                                                  const fft_params::SplitType output_split,
+                                                  size_t                      min_fft_rank = 1)
 {
     int deviceCount = 0;
     (void)hipGetDeviceCount(&deviceCount);
@@ -37,67 +39,70 @@ std::vector<fft_params> param_generator_multi_gpu()
     if(deviceCount < 2)
         return {};
 
-    std::vector<fft_params> all_params
-        = param_generator_complex(multi_gpu_sizes,
-                                  precision_range_sp_dp,
-                                  {1},
-                                  stride_generator({{1}}),
-                                  stride_generator({{1}}),
-                                  {{0, 0}},
-                                  {{0, 0}},
-                                  {fft_placement_inplace, fft_placement_notinplace},
-                                  false);
+    auto params_complex = param_generator_complex(multi_gpu_sizes,
+                                                  precision_range_sp_dp,
+                                                  {1, 10},
+                                                  stride_generator({{1}}),
+                                                  stride_generator({{1}}),
+                                                  {{0, 0}},
+                                                  {{0, 0}},
+                                                  {fft_placement_inplace, fft_placement_notinplace},
+                                                  false);
 
-    for(auto& params : all_params)
-    {
-        // split up the slowest FFT dimension among the available
-        // devices
-        size_t slowLen = params.length.front();
-        if(slowLen < static_cast<unsigned int>(deviceCount))
-            continue;
+    auto params_real = param_generator_real(multi_gpu_sizes,
+                                            precision_range_sp_dp,
+                                            {1, 10},
+                                            stride_generator({{1}}),
+                                            stride_generator({{1}}),
+                                            {{0, 0}},
+                                            {{0, 0}},
+                                            {fft_placement_notinplace},
+                                            false);
 
-        // add input and output fields
-        auto& ifield = params.ifields.emplace_back();
-        auto& ofield = params.ofields.emplace_back();
+    std::vector<fft_params> all_params;
 
-        for(int i = 0; i < deviceCount; ++i)
+    auto distribute_params = [=, &all_params](const std::vector<fft_params>& params) {
+        for(auto& p : params)
         {
-            // start at origin
-            std::vector<size_t> field_lower(params.length.size());
-            std::vector<size_t> field_upper(params.length.size());
+            if(p.length.size() < min_fft_rank)
+                continue;
 
-            // note: slowest FFT dim is index 1 in these coordinates
-            field_lower[0] = slowLen / deviceCount * i;
-            // last brick needs to include the whole slow len
-            if(i == deviceCount - 1)
-                field_upper[0] = slowLen;
-            else
-                field_upper[0] = std::min(slowLen, field_lower[0] + slowLen / deviceCount);
+            auto p_dist = p;
+            p_dist.distribute_input(deviceCount, input_split);
+            p_dist.distribute_output(deviceCount, output_split);
 
-            for(unsigned int upperDim = 1; upperDim < field_upper.size(); ++upperDim)
-            {
-                field_upper[upperDim] = params.length[upperDim];
-            }
-
-            // field coordinates also need to include batch
-            field_lower.insert(field_lower.begin(), 0);
-            field_upper.insert(field_upper.begin(), params.nbatch);
-
-            auto field_istride = params.istride;
-            field_istride.insert(field_istride.begin(), params.idist);
-            auto field_ostride = params.ostride;
-            field_ostride.insert(field_ostride.begin(), params.odist);
-
-            ifield.bricks.push_back(
-                fft_params::fft_brick{field_lower, field_upper, field_istride, i});
-            ofield.bricks.push_back(
-                fft_params::fft_brick{field_lower, field_upper, field_ostride, i});
+            // "placement" flag is meaningless if exactly one of
+            // input+output is a field.  So just add those cases if
+            // the flag is "out-of-place", since "in-place" is
+            // exactly the same test case.
+            if(p_dist.placement == fft_placement_inplace
+               && p_dist.ifields.empty() != p_dist.ofields.empty())
+                continue;
+            all_params.push_back(std::move(p_dist));
         }
-    }
+    };
+
+    distribute_params(params_complex);
+    distribute_params(params_real);
+
     return all_params;
 }
 
-INSTANTIATE_TEST_SUITE_P(multi_gpu,
+// split both input and output on slowest FFT dim
+INSTANTIATE_TEST_SUITE_P(multi_gpu_slowest_dim,
                          accuracy_test,
-                         ::testing::ValuesIn(param_generator_multi_gpu()),
+                         ::testing::ValuesIn(param_generator_multi_gpu(
+                             fft_params::SplitType::SLOWEST, fft_params::SplitType::SLOWEST)),
+                         accuracy_test::TestName);
+
+// split slowest FFT dim only on input, or only on output
+INSTANTIATE_TEST_SUITE_P(multi_gpu_slowest_input_dim,
+                         accuracy_test,
+                         ::testing::ValuesIn(param_generator_multi_gpu(
+                             fft_params::SplitType::SLOWEST, fft_params::SplitType::NONE)),
+                         accuracy_test::TestName);
+INSTANTIATE_TEST_SUITE_P(multi_gpu_slowest_output_dim,
+                         accuracy_test,
+                         ::testing::ValuesIn(param_generator_multi_gpu(
+                             fft_params::SplitType::NONE, fft_params::SplitType::SLOWEST)),
                          accuracy_test::TestName);

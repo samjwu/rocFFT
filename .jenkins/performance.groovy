@@ -33,7 +33,7 @@ def runCompileCommand(platform, project, jobName, boolean debug=false, boolean b
     String warningArgs = '-DWERROR=ON'
     String buildTypeArg = debug ? '-DCMAKE_BUILD_TYPE=Debug -DROCFFT_DEVICE_FORCE_RELEASE=ON' : '-DCMAKE_BUILD_TYPE=Release'
     String buildTypeDir = debug ? 'debug' : 'release'
-    String rtcBuildCache = "-DROCFFT_BUILD_KERNEL_CACHE_PATH=\$JENKINS_HOME_DIR/rocfft_build_cache.db"
+    String rtcBuildCache = "-DROCFFT_BUILD_KERNEL_CACHE_PATH=\$JENKINS_HOME_LOCAL/rocfft_build_cache.db"
     String cmake = platform.jenkinsLabel.contains('centos') ? 'cmake3' : 'cmake'
 
     def command = """#!/usr/bin/env bash
@@ -43,13 +43,13 @@ def runCompileCommand(platform, project, jobName, boolean debug=false, boolean b
                 set -e
                 mkdir -p build/${buildTypeDir} && pushd build/${buildTypeDir}
                 ${auxiliary.gfxTargetParser()}
-                ${cmake} -DCMAKE_CXX_COMPILER=/opt/rocm/bin/hipcc -DCMAKE_C_COMPILER=/opt/rocm/bin/hipcc -DAMDGPU_TARGETS=\$gfx_arch -DSINGLELIB=on ${buildTypeArg} ${clientArgs} ${warningArgs} ${rtcBuildCache} ../..
+                ${cmake} -DCMAKE_CXX_COMPILER=/opt/rocm/bin/hipcc -DCMAKE_C_COMPILER=/opt/rocm/bin/hipcc -DAMDGPU_TARGETS=\$gfx_arch ${buildTypeArg} ${clientArgs} ${warningArgs} ${rtcBuildCache} ../..
                 make -j\$(nproc)
                 popd
                 cd ref-repo
                 mkdir -p build/${buildTypeDir} && pushd build/${buildTypeDir}
                 ${auxiliary.gfxTargetParser()}
-                ${cmake} -DCMAKE_CXX_COMPILER=/opt/rocm/bin/hipcc -DCMAKE_C_COMPILER=/opt/rocm/bin/hipcc -DAMDGPU_TARGETS=\$gfx_arch -DSINGLELIB=on ${buildTypeArg} ${noclientArgs} ${warningArgs} ${rtcBuildCache} ../..
+                ${cmake} -DCMAKE_CXX_COMPILER=/opt/rocm/bin/hipcc -DCMAKE_C_COMPILER=/opt/rocm/bin/hipcc -DAMDGPU_TARGETS=\$gfx_arch ${buildTypeArg} ${noclientArgs} ${warningArgs} ${rtcBuildCache} ../..
                 make -j\$(nproc)
             """
     platform.runCommand(this, command)
@@ -88,14 +88,14 @@ def runTestCommand (platform, project, boolean debug=false)
                     reportTitles: "${dataType}-precision-${platform.gpu}"])
     }
 
-    
+
     withCredentials([gitUsernamePassword(credentialsId: 'GitHub-ROCmMathLibrariesBot-Token', gitToolName: 'git-tool')])
     {
         platform.runCommand(
             this,
             """
             cd ${project.paths.build_prefix}
-            git clone https://github.com/ROCmSoftwarePlatform/rocPTS.git -b release/rocpts-rel-1.1.0
+            git clone https://github.com/ROCmSoftwarePlatform/rocPTS.git -b release/rocpts-rel-1.2.0
             cd rocPTS
             python3 -m pip install build
             python3 -m build
@@ -116,7 +116,14 @@ def runTestCommand (platform, project, boolean debug=false)
     mkdir -p \${benchmark_folder}/all_change \${benchmark_folder}/all_ref
     cp -uf ./*_change/* \${benchmark_folder}/all_change
     cp -uf ./*_ref/* \${benchmark_folder}/all_ref
-    python3 ./record_pts.py --dataset-path \$PWD/\${benchmark_folder} --reference-dataset all_ref --new-dataset all_change -v 5.5 -l pts_rocfft_benchmark_data-v1.0.0
+    python3 ./record_pts.py \
+        --dataset-path \$PWD/\${benchmark_folder} \
+        --reference-dataset all_ref \
+        --new-dataset all_change \
+        --new-build . \
+        --reference-build ./ref-repo\
+        -v 5.5 \
+        -l pts_rocfft_benchmark_data-v1.0.0
     """
     withCredentials([usernamePassword(credentialsId: 'PTS_API_ID_KEY_PROD', usernameVariable: 'PTS_API_ID', passwordVariable: 'PTS_API_KEY')])
     {

@@ -81,8 +81,12 @@ struct rocfft_brick_t
     // contiguous.
     std::vector<size_t> contiguous_strides() const;
 
-    // compute offset of this brick, given the field's stride + dist
-    size_t offset_in_field(const std::vector<size_t>& fieldStride, size_t fieldDist) const;
+    // return true if this brick is contiguous in the specified field
+    bool is_contiguous_in_field(const std::vector<size_t>& field_length,
+                                const std::vector<size_t>& field_stride) const;
+
+    // compute offset of this brick, given the field's stride
+    size_t offset_in_field(const std::vector<size_t>& fieldStride) const;
 
     // location of the brick
     int device = 0;
@@ -161,6 +165,12 @@ struct rocfft_plan_t
     // before we start creating any child nodes from the root plan.
     void sort();
 
+    static bool is_contiguous(const std::vector<size_t>& length,
+                              const std::vector<size_t>& stride,
+                              size_t                     dist);
+    bool        is_contiguous_input();
+    bool        is_contiguous_output();
+
     // Add a multi-plan item for execution.  Returns the index of the
     // new item in the overall multi-GPU plan.  Also provide a
     // vector of indexes of other items that must complete before this
@@ -216,12 +226,31 @@ private:
                             std::vector<size_t>& sorted) const;
 
     // Temp buffers allocated during plan creation for multi-device
-    // plans are remembered here.  Individual plan items can have
-    // void*'s that point to these buffers.
-    //
-    // use a std::list for convenience so that existing references to
-    // buffers never get invalidated when new buffers are added
-    std::list<gpubuf> tempBuffers;
+    // plans are remembered here.  Mapped per-device.  Individual
+    // plan items can have void*'s that point to these buffers.
+    std::multimap<int, gpubuf> tempBuffers;
+
+    // gather a set of bricks to a field on the current device
+    std::vector<size_t> GatherBricksToField(int                                currentDevice,
+                                            const std::vector<rocfft_brick_t>& bricks,
+                                            rocfft_precision                   precision,
+                                            rocfft_array_type                  arrayType,
+                                            const std::vector<size_t>&         field_length,
+                                            const std::vector<size_t>&         field_stride,
+                                            BufferPtr                          output,
+                                            const std::vector<size_t>&         antecedents,
+                                            size_t                             elem_size);
+
+    // scatter a field on the current device to a set of bricks
+    std::vector<size_t> ScatterFieldToBricks(int                                currentDevice,
+                                             BufferPtr                          input,
+                                             rocfft_precision                   precision,
+                                             rocfft_array_type                  arrayType,
+                                             const std::vector<size_t>&         field_length,
+                                             const std::vector<size_t>&         field_stride,
+                                             const std::vector<rocfft_brick_t>& bricks,
+                                             const std::vector<size_t>&         antecedents,
+                                             size_t                             elem_size);
 };
 
 bool PlanPowX(ExecPlan& execPlan);

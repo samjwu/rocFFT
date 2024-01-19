@@ -83,16 +83,9 @@ set( rocfft-test_source
   callback_change_type.cpp
   default_callbacks_test.cpp
   unit_test.cpp
-  misc/source/test_exception.cpp
   validate_length_stride.cpp
   random.cpp
   ../../shared/array_validator.cpp
-  )
-
-set( rocfft-test_includes
-  fftw_transform.h
-  rocfft_against_fftw.h
-  misc/include/test_exception.h
   )
 
 add_executable( rocfft-test ${rocfft-test_source} ${rocfft-test_includes} )
@@ -112,6 +105,10 @@ if( NOT BUILD_FFTW )
 endif()
 
 include( ExternalProject )
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
+  # use extract timestamp for fetched files instead of timestamps in the archive
+  cmake_policy(SET CMP0135 NEW)
+endif()
 
 # also try to build FFTW if FFTW isn't present
 if( BUILD_FFTW OR NOT FFTW_FOUND )
@@ -175,7 +172,6 @@ endif()
 set( rocfft-test_include_dirs
   $<BUILD_INTERFACE:${Boost_INCLUDE_DIRS}>
   $<BUILD_INTERFACE:${FFTW_INCLUDES}>
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/misc/include>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../library/src/include>
   ${ROCM_CLANG_ROOT}/include
   )
@@ -218,6 +214,9 @@ target_link_libraries( rocfft-test
   hip::hiprand
   ${rocfft-test_link_libs}
   )
+
+include( ../../cmake/std-filesystem.cmake )
+target_link_std_experimental_filesystem( rocfft-test )
 
 if( USE_CUDA )
   target_include_directories( rocfft-test

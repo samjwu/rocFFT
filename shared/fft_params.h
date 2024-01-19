@@ -487,41 +487,61 @@ public:
     // Convert to string for output.
     std::string str(const std::string& separator = ", ") const
     {
-        std::stringstream ss;
-        ss << "length:";
-        for(auto i : length)
-            ss << " " << i;
-        ss << separator;
-        ss << "istride:";
-        for(auto i : istride)
-            ss << " " << i;
-        ss << separator;
-        ss << "idist: " << idist << separator;
+        // top-level stride/dist are not used when fields are specified.
+        const bool have_ifields = !ifields.empty();
+        const bool have_ofields = !ofields.empty();
 
-        ss << "ostride:";
-        for(auto i : ostride)
-            ss << " " << i;
-        ss << separator;
-        ss << "odist: " << odist << separator;
+        std::stringstream ss;
+        auto print_size_vec = [&](const char* description, const std::vector<size_t>& vec) {
+            ss << description << ":";
+            for(auto i : vec)
+                ss << " " << i;
+            ss << separator;
+        };
+        auto print_fields = [&](const char* description, const std::vector<fft_field>& fields) {
+            for(unsigned int fidx = 0; fidx < fields.size(); ++fidx)
+            {
+                const auto& f = fields[fidx];
+                ss << description << " " << fidx << ":" << separator;
+                for(unsigned int bidx = 0; bidx < f.bricks.size(); ++bidx)
+                {
+                    const auto& b = f.bricks[bidx];
+                    ss << " brick " << bidx << ":" << separator;
+                    print_size_vec("  lower", b.lower);
+                    print_size_vec("  upper", b.upper);
+                    print_size_vec("  stride", b.stride);
+                    ss << "  device: " << b.device << separator;
+                }
+            }
+        };
+
+        print_size_vec("length", length);
+        if(have_ifields)
+        {
+            print_fields("ifield", ifields);
+        }
+        else
+        {
+            print_size_vec("istride", istride);
+            ss << "idist: " << idist << separator;
+        }
+
+        if(have_ofields)
+        {
+            print_fields("ofield", ofields);
+        }
+        else
+        {
+            print_size_vec("ostride", ostride);
+            ss << "odist: " << odist << separator;
+        }
 
         ss << "batch: " << nbatch << separator;
-        ss << "isize:";
-        for(auto i : isize)
-            ss << " " << i;
-        ss << separator;
-        ss << "osize:";
-        for(auto i : osize)
-            ss << " " << i;
-        ss << separator;
+        print_size_vec("isize", isize);
+        print_size_vec("osize", osize);
 
-        ss << "ioffset:";
-        for(auto i : ioffset)
-            ss << " " << i;
-        ss << separator;
-        ss << "ooffset:";
-        for(auto i : ooffset)
-            ss << " " << i;
-        ss << separator;
+        print_size_vec("ioffset", ioffset);
+        print_size_vec("ooffset", ooffset);
 
         if(placement == fft_placement_inplace)
             ss << "in-place";
@@ -544,24 +564,11 @@ public:
         }
         ss << separator;
 
-        ss << "ilength:";
-        for(const auto i : ilength())
-            ss << " " << i;
-        ss << separator;
-        ss << "olength:";
-        for(const auto i : olength())
-            ss << " " << i;
-        ss << separator;
+        print_size_vec("ilength", ilength());
+        print_size_vec("olength", olength());
 
-        ss << "ibuffer_size:";
-        for(const auto i : ibuffer_sizes())
-            ss << " " << i;
-        ss << separator;
-
-        ss << "obuffer_size:";
-        for(const auto i : obuffer_sizes())
-            ss << " " << i;
-        ss << separator;
+        print_size_vec("ibuffer_size", ibuffer_sizes());
+        print_size_vec("obuffer_size", obuffer_sizes());
 
         if(scale_factor != 1.0)
             ss << "scale factor: " << scale_factor << separator;
@@ -1837,6 +1844,84 @@ public:
     // provided to the FFT library's "execute" API.  obuffer is the
     // buffer where transform output needs to go for validation
     virtual void multi_gpu_finalize(std::vector<gpubuf>& obuffer, std::vector<void*>& pobuffer) {}
+
+    enum class SplitType
+    {
+        // do not split this field into bricks
+        NONE,
+        // split field on fastest FFT dimension
+        FASTEST,
+        // split field on slowest FFT dimension
+        SLOWEST,
+    };
+
+    // create bricks in the specified field for the specified number
+    // of devices.  Field length includes batch dimension.
+    void distribute_field(int                        deviceCount,
+                          std::vector<fft_field>&    fields,
+                          const std::vector<size_t>& field_length,
+                          SplitType                  type)
+    {
+        if(type == SplitType::NONE)
+            return;
+
+        // batch is the first index, slowest FFT length is index 1
+        size_t splitDimIdx = type == SplitType::SLOWEST ? 1 : field_length.size() - 1;
+
+        size_t splitLen = field_length[splitDimIdx];
+        if(splitLen < static_cast<size_t>(deviceCount))
+            throw std::runtime_error("too many devices to distribute length "
+                                     + std::to_string(splitLen));
+
+        auto& field = fields.emplace_back();
+
+        for(int i = 0; i < deviceCount; ++i)
+        {
+            // start at origin
+            std::vector<size_t> field_lower(field_length.size());
+            std::vector<size_t> field_upper = field_length;
+
+            // note: slowest FFT dim is index 0 in these coordinates
+            field_lower[splitDimIdx] = splitLen / deviceCount * i;
+
+            // last brick needs to include the whole split len
+            if(i == deviceCount - 1)
+            {
+                field_upper[splitDimIdx] = splitLen;
+            }
+            else
+            {
+                field_upper[splitDimIdx]
+                    = std::min(splitLen, field_lower[splitDimIdx] + splitLen / deviceCount);
+            }
+
+            // bricks have contiguous strides
+            size_t              brick_dist = 1;
+            std::vector<size_t> brick_stride(field_lower.size());
+            for(size_t distIdx = 0; distIdx < field_lower.size(); ++distIdx)
+            {
+                // fill strides from fastest to slowest
+                *(brick_stride.rbegin() + distIdx) = brick_dist;
+                brick_dist *= *(field_upper.rbegin() + distIdx) - *(field_lower.rbegin() + distIdx);
+            }
+            field.bricks.push_back(
+                fft_params::fft_brick{field_lower, field_upper, brick_stride, i});
+        }
+    }
+
+    void distribute_input(int deviceCount, SplitType type)
+    {
+        auto len = length;
+        len.insert(len.begin(), nbatch);
+        distribute_field(deviceCount, ifields, len, type);
+    }
+
+    void distribute_output(int deviceCount, SplitType type)
+    {
+        auto len = olength();
+        len.insert(len.begin(), nbatch);
+        distribute_field(deviceCount, ofields, len, type);
+    }
 };
 
 // This is used with the program_options class so that the user can type an integer on the

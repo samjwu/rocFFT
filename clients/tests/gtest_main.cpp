@@ -33,10 +33,10 @@
 
 #include "../../shared/concurrency.h"
 #include "../../shared/environment.h"
+#include "../../shared/rocfft_accuracy_test.h"
+#include "../../shared/test_params.h"
 #include "../../shared/work_queue.h"
 #include "rocfft/rocfft.h"
-#include "rocfft_accuracy_test.h"
-#include "test_params.h"
 
 #ifdef WIN32
 #include <windows.h>
@@ -56,6 +56,8 @@ size_t random_seed;
 double planar_prob;
 // Probability of running individual callback FFTs
 double callback_prob;
+// Number of random tests per suite
+size_t n_random_tests = 0;
 
 // Transform parameters for manual test:
 fft_params manual_params;
@@ -92,6 +94,9 @@ bool fftw_compare = true;
 
 // Cache the last cpu fft that was requested
 last_cpu_fft_cache last_cpu_fft_data;
+
+// Number of devices to distribute the FFT to for manual tests
+int manual_devices = 1;
 
 system_memory get_system_memory()
 {
@@ -136,6 +141,16 @@ void precompile_test_kernels(const std::string& precompile_file)
             if(name.find("vs_fftw/") != std::string::npos)
             {
                 name.erase(0, 8);
+
+                // Run any problem that uses brick decomposition
+                // without touching batch.  Bricks are specified with
+                // batch indexes, so arbitrarily changing batch to 1
+                // can break those cases.
+                if(name.find("_brick_") != std::string::npos)
+                {
+                    tokens.emplace_back(std::move(name));
+                    continue;
+                }
 
                 // change batch to 1, so we don't waste time creating
                 // multiple plans that differ only by batch
@@ -241,6 +256,8 @@ int main(int argc, char* argv[])
          "print out detailed information for the tests.")
         ("seed", po::value<size_t>(&random_seed),
          "Random seed; if unset, use an actual random seed.")
+        ("nrand", po::value<size_t>(&n_random_tests)->default_value(0),
+         "Number of extra randomized tests.")
         ("planar_prob", po::value<double>(&planar_prob)->default_value(0.1),
         "Probability of running individual planar transforms")
         ("callback", "Inject load/store callbacks")
@@ -322,6 +339,8 @@ int main(int argc, char* argv[])
         ("wisdomfile,W",
          po::value<std::string>(&fftw_wisdom_filename)->default_value("wisdom3.txt"),
          "FFTW3 wisdom filename")
+        ("manual_devices", po::value<int>(&manual_devices)->default_value(1),
+	  "Distribute manual test case among this many devices")
         ("scalefactor", po::value<double>(&manual_params.scale_factor), "Scale factor to apply to output.")
         ("token", po::value<std::string>(&test_token)->default_value(""), "Test token name for manual test")
         ("precompile",  po::value<std::string>(&precompile_file), "Precompile kernels to a file for all test cases before running tests");
@@ -512,6 +531,12 @@ int main(int argc, char* argv[])
 TEST(manual, vs_fftw) // MANUAL TESTS HERE
 {
     rocfft_params params(manual_params);
+
+    if(manual_devices > 1)
+    {
+        params.distribute_input(manual_devices, fft_params::SplitType::SLOWEST);
+        params.distribute_output(manual_devices, fft_params::SplitType::SLOWEST);
+    }
 
     // Run an individual test using the provided command-line parameters.
     params.validate();

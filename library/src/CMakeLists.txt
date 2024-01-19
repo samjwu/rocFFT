@@ -55,8 +55,13 @@ target_include_directories( rocfft_rtc_helper
   PRIVATE
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/library/src/include>
 )
+# rocfft_rtc_helper will be installed in /opt/rocm-ver/lib/rocfft/VERSION_STRING
+# To find rocm libraries need the relative RPATH
+set(APPEND_ROCMLIB_RPATH "\$ORIGIN/../../../lib")
 target_link_libraries( rocfft_rtc_helper PRIVATE rocfft-rtc-compile )
-set_target_properties( rocfft_rtc_helper PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON )
+set_target_properties( rocfft_rtc_helper PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
+                                         BUILD_WITH_INSTALL_RPATH TRUE
+                                         INSTALL_RPATH "${APPEND_ROCMLIB_RPATH}" )
 
 # Package that helps me set visibility for function names exported
 # from shared library
@@ -227,18 +232,22 @@ if( SQLITE_USE_SYSTEM_PACKAGE )
 else()
   include( FetchContent )
 
-  if(DEFINED ENV{SQLITE_SRC_URL})
-    set(SQLITE_SRC_URL_INIT $ENV{SQLITE_SRC_URL})
+  if(DEFINED ENV{SQLITE_3_43_2_SRC_URL})
+    set(SQLITE_3_43_2_SRC_URL_INIT $ENV{SQLITE_3_43_2_SRC_URL})
   else()
-    set(SQLITE_SRC_URL_INIT https://sqlite.org/2021/sqlite-amalgamation-3360000.zip)
+    set(SQLITE_3_43_2_SRC_URL_INIT https://www.sqlite.org/2023/sqlite-amalgamation-3430200.zip)
   endif()
-  set(SQLITE_SRC_URL ${SQLITE_SRC_URL_INIT} CACHE STRING "Location of SQLite source code")
-  set(SQLITE_SRC_SHA256 999826fe4c871f18919fdb8ed7ec9dd8217180854dd1fe21eea96aed36186729 CACHE STRING "SHA256 hash of SQLite source code")
+  set(SQLITE_3_43_2_SRC_URL ${SQLITE_3_43_2_SRC_URL_INIT} CACHE STRING "Location of SQLite source code")
+  set(SQLITE_SRC_3_43_2_SHA3_256 af02b88cc922e7506c6659737560c0756deee24e4e7741d4b315af341edd8b40 CACHE STRING "SHA3-256 hash of SQLite source code")
 
   # embed SQLite
+  if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
+    # use extract timestamp for fetched files instead of timestamps in the archive
+    cmake_policy(SET CMP0135 NEW)
+  endif()
   FetchContent_Declare(sqlite_local
-    URL ${SQLITE_SRC_URL}
-    URL_HASH SHA256=${SQLITE_SRC_SHA256}
+    URL ${SQLITE_3_43_2_SRC_URL}
+    URL_HASH SHA3_256=${SQLITE_SRC_3_43_2_SHA3_256}
   )
   FetchContent_MakeAvailable(sqlite_local)
   add_library( sqlite3 OBJECT ${sqlite_local_SOURCE_DIR}/sqlite3.c )
@@ -257,6 +266,8 @@ else()
   )
   set(ROCFFT_SQLITE_LIB sqlite3)
 endif()
+
+include( ../../cmake/std-filesystem.cmake )
 
 # RTC stuff is used by both core library and helpers, so create
 # separate libraries
@@ -294,6 +305,8 @@ add_library( rocfft-rtc-cache OBJECT
   rtc_cache.cpp
 )
 target_link_libraries( rocfft-rtc-cache PUBLIC ${ROCFFT_SQLITE_LIB} )
+target_link_std_experimental_filesystem( rocfft-rtc-cache )
+
 # generating kernels from TreeNodes and launching them
 add_library( rocfft-rtc-launch OBJECT
   rtc_kernel.cpp
@@ -448,15 +461,14 @@ foreach( target rocfft rocfft_offline_tuner rocfft_solmap_convert rocfft_aot_hel
     rocfft-rtc-common
     )
 
-  if( NOT WIN32 )
-    target_link_libraries( ${target} PRIVATE -lstdc++fs )
-  endif()
+  target_link_std_experimental_filesystem(${target})
 
   target_compile_options( ${target} PRIVATE ${WARNING_FLAGS} )
   if( ${CMAKE_BUILD_TYPE} STREQUAL Debug )
     target_compile_options(${target} PRIVATE -Og)
   endif()
 endforeach()
+
 target_link_libraries( rocfft PRIVATE
   generator
   rocfft-function-pool
@@ -464,17 +476,22 @@ target_link_libraries( rocfft PRIVATE
   rocfft-solution-map
   rocfft-tuning-helper
   )
+target_link_std_experimental_filesystem( rocfft )
+
 target_link_libraries( rocfft_config_search PRIVATE
   ${ROCFFT_HOST_LINK_LIBS}
   generator
   rocfft-rtc-launch
   rocfft-function-pool
   )
+target_link_std_experimental_filesystem( rocfft_config_search )
+
 target_link_libraries( rocfft_aot_helper PRIVATE
   generator
   rocfft-function-pool
   rocfft-solution-map
   )
+target_link_std_experimental_filesystem( rocfft_aot_helper )
 
  # build executable rocfft-offline-tuner
 if( ROCFFT_BUILD_OFFLINE_TUNER )
@@ -497,7 +514,11 @@ if( ROCFFT_BUILD_OFFLINE_TUNER )
 endif()
 
 # compile kernels into the cache file we ship
-#
+
+# While useful in most situations, building the kernel cache takes a long time
+# enable a configure-time option to skip kernel cache building
+option( ROCFFT_KERNEL_CACHE_ENABLE "Enable building rocFFT kernel cache" ON)
+
 # cache file should go next to the shared object - on Windows this
 # would be the DLL, not the import library.
 if( WIN32 )
@@ -514,19 +535,24 @@ endif()
 # Only build kernels ahead-of-time for a more limited set of
 # architectures.  Less common architectures are filtered out from the
 # list and kernels for them are built at runtime instead.
-set( AMDGPU_TARGETS_AOT ${AMDGPU_TARGETS} )
-list( REMOVE_ITEM AMDGPU_TARGETS_AOT gfx803 )
-list( REMOVE_ITEM AMDGPU_TARGETS_AOT gfx900 )
-add_custom_command(
-  OUTPUT rocfft_kernel_cache.db
-  COMMAND rocfft_aot_helper \"${ROCFFT_BUILD_KERNEL_CACHE_PATH}\" ${ROCFFT_KERNEL_CACHE_PATH} $<TARGET_FILE:rocfft_rtc_helper> ${AMDGPU_TARGETS_AOT}
-  DEPENDS rocfft_aot_helper rocfft_rtc_helper
-  COMMENT "Compile default kernels and solution-map kernels into shipped cache file"
-)
-add_custom_target( rocfft_kernel_cache_target ALL
-  DEPENDS rocfft_kernel_cache.db
-  VERBATIM
-)
+if ( ROCFFT_KERNEL_CACHE_ENABLE )
+
+  set( AMDGPU_TARGETS_AOT ${AMDGPU_TARGETS} )
+  list( REMOVE_ITEM AMDGPU_TARGETS_AOT gfx803 )
+  list( REMOVE_ITEM AMDGPU_TARGETS_AOT gfx900 )
+  # The binary will be having relative RUNPATH with respect to install directory
+  # Set LD_LIBRARY_PATH for executing the binary from build directory.
+  add_custom_command(
+    OUTPUT rocfft_kernel_cache.db
+    COMMAND ${CMAKE_COMMAND} -E env "LD_LIBRARY_PATH=$ENV{LD_LIBRARY_PATH}:${ROCM_PATH}/${CMAKE_INSTALL_LIBDIR}" ./rocfft_aot_helper \"${ROCFFT_BUILD_KERNEL_CACHE_PATH}\" ${ROCFFT_KERNEL_CACHE_PATH} $<TARGET_FILE:rocfft_rtc_helper> ${AMDGPU_TARGETS_AOT}
+    DEPENDS rocfft_aot_helper rocfft_rtc_helper
+    COMMENT "Compile kernels into shipped cache file"
+  )
+  add_custom_target( rocfft_kernel_cache_target ALL
+    DEPENDS rocfft_kernel_cache.db
+    VERBATIM
+  )
+endif()
 
 rocm_set_soversion( rocfft ${rocfft_SOVERSION} )
 set_target_properties( rocfft PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/staging" )
@@ -567,7 +593,7 @@ else()
   set(ROCFFT_KERNEL_CACHE_INSTALL_DIR ${ROCM_INSTALL_LIBDIR}/rocfft)
 endif()
 
-if( NOT ENABLE_ASAN_PACKAGING )
+if( NOT ENABLE_ASAN_PACKAGING AND ROCFFT_KERNEL_CACHE_ENABLE)
   rocm_install(FILES ${ROCFFT_KERNEL_CACHE_PATH}
     DESTINATION "${ROCFFT_KERNEL_CACHE_INSTALL_DIR}"
     COMPONENT runtime
