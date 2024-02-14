@@ -120,12 +120,6 @@ option(ROCFFT_RUNTIME_COMPILE_DEFAULT "Compile kernels at runtime by default" OF
 # Set default to OFF since users are not likely to tune
 option(ROCFFT_BUILD_OFFLINE_TUNER "Build with offline tuner executable rocfft_offline_tuner" OFF)
 
-option(BUILD_CODE_COVERAGE "Build with code coverage flags (clang only)" OFF)
-
-if(BUILD_CODE_COVERAGE)
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fprofile-instr-generate -fcoverage-mapping")
-endif()
-
 if(BUILD_ADDRESS_SANITIZER)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -shared-libasan")
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address -shared-libasan")
@@ -275,49 +269,3 @@ rocm_create_package(
     LDCONFIG
     LDCONFIG_DIR ${ROCFFT_CONFIG_DIR}
 )
-
-if(BUILD_CODE_COVERAGE)
-  #
-  # Run coverage analysis
-  #
-  add_custom_target(coverage_analysis
-    COMMAND echo Coverage GTEST_FILTER=\${GTEST_FILTER}
-    COMMAND ROCM_PATH=/opt/rocm GTEST_LISTENER=NO_PASS_LINE_IN_LOG ./clients/staging/rocfft-test --precompile=rocfft-test-precompile.db --gtest_filter=\"\${GTEST_FILTER}\" --gtest_color=yes --R 80 --nrand 10
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    )
-
-  add_dependencies(coverage_analysis rocfft)
-
-  #
-  # Prepare coverage output
-  # This little script is generated because the option '--gcov-tool <program name>' of lcov cannot take arguments.
-  #
-  add_custom_target(coverage_output
-    DEPENDS coverage_analysis
-    COMMAND mkdir -p lcoverage
-    COMMAND echo "\\#!/bin/bash" > llvm-gcov.sh
-    COMMAND echo "\\# THIS FILE HAS BEEN GENERATED" >> llvm-gcov.sh
-    COMMAND printf "exec /opt/rocm/llvm/bin/llvm-cov gcov $$\\@" >> llvm-gcov.sh
-    COMMAND chmod +x llvm-gcov.sh
-    )
-
-  #
-  # Generate coverage output.
-  #
-  add_custom_command(TARGET coverage_output
-    COMMAND find . -name "*.gcda"
-    COMMAND lcov --directory . --base-directory ./rocfft/build/release/clients/staging --gcov-tool ${CMAKE_BINARY_DIR}/llvm-gcov.sh --capture -o lcoverage/raw_main_coverage.info
-    COMMAND lcov --remove lcoverage/raw_main_coverage.info "'/opt/*'" "'/usr/*'" "'*/test/*'" -o lcoverage/main_coverage.info
-    COMMAND genhtml lcoverage/main_coverage.info --output-directory lcoverage
-    )
-
-  add_custom_target(coverage DEPENDS coverage_output)
-
-  #
-  # Coverage cleanup
-  #
-  add_custom_target(coverage_cleanup
-    COMMAND find ${CMAKE_BINARY_DIR} -name *.gcda -delete
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    )
-endif()

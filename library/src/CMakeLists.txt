@@ -629,3 +629,55 @@ if(BUILD_FILE_REORG_BACKWARD_COMPATIBILITY AND NOT WIN32)
         DESTINATION "." )
   message( STATUS "Backward Compatible Sym Link Created for include directories" )
 endif()
+
+option(BUILD_CODE_COVERAGE "Build with code coverage flags (clang only)" OFF)
+
+if(BUILD_CODE_COVERAGE)
+  add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
+endif()
+
+if(BUILD_CODE_COVERAGE)
+  #
+  # Run coverage analysis
+  #
+  add_custom_target(coverage_analysis
+    COMMAND echo Coverage GTEST_FILTER=\${GTEST_FILTER}
+    COMMAND ROCM_PATH=/opt/rocm GTEST_LISTENER=NO_PASS_LINE_IN_LOG ./clients/staging/rocfft-test --precompile=rocfft-test-precompile.db --gtest_filter=\"\${GTEST_FILTER}\" --gtest_color=yes --R 80 --nrand 10
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+
+  add_dependencies(coverage_analysis rocfft)
+
+  #
+  # Prepare coverage output
+  # This little script is generated because the option '--gcov-tool <program name>' of lcov cannot take arguments.
+  #
+  add_custom_target(coverage_output
+    DEPENDS coverage_analysis
+    COMMAND mkdir -p lcoverage
+    COMMAND echo "\\#!/bin/bash" > llvm-gcov.sh
+    COMMAND echo "\\# THIS FILE HAS BEEN GENERATED" >> llvm-gcov.sh
+    COMMAND printf "exec /opt/rocm/llvm/bin/llvm-cov gcov $$\\@" >> llvm-gcov.sh
+    COMMAND chmod +x llvm-gcov.sh
+    )
+
+  #
+  # Generate coverage output.
+  #
+  add_custom_command(TARGET coverage_output
+    COMMAND find . -name "*.gcda"
+    COMMAND lcov --directory . --base-directory ./rocfft/build/release/clients/staging --gcov-tool ${CMAKE_BINARY_DIR}/llvm-gcov.sh --capture -o lcoverage/raw_main_coverage.info
+    COMMAND lcov --remove lcoverage/raw_main_coverage.info "'/opt/*'" "'/usr/*'" "'*/test/*'" -o lcoverage/main_coverage.info
+    COMMAND genhtml lcoverage/main_coverage.info --output-directory lcoverage
+    )
+
+  add_custom_target(coverage DEPENDS coverage_output)
+
+  #
+  # Coverage cleanup
+  #
+  add_custom_target(coverage_cleanup
+    COMMAND find ${CMAKE_BINARY_DIR} -name *.gcda -delete
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+endif()
