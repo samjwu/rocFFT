@@ -272,8 +272,6 @@ rocm_create_package(
 
 option(BUILD_CODE_COVERAGE "Build with code coverage flags (clang only)" OFF)
 
-add_subdirectory(library/src)
-
 if(BUILD_CODE_COVERAGE)
   add_custom_target(coverage_cleanup
     COMMAND find ${CMAKE_BINARY_DIR} -name *.gcda -delete
